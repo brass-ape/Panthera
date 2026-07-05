@@ -1,0 +1,48 @@
+# --- Python -----------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# --- Assistant runtime data (personal, machine-specific) --------------
+# The vault is the user's personal knowledge base (names, journal
+# entries, hardware specs, etc.) -- never something to publish.
+# config.py's ensure_vault_structure() recreates the empty folder tree
+# on first run, so nothing here needs a placeholder to survive cloning.
+/vault/
+assistant.log
+*.log
+
+# Local settings overrides (see config.py's module docstring) -- never
+# holds secrets, but is machine/user-specific, like a local .env.
+/config.json
+
+# --- Rust (gui/) --------------------------------------------------------
+# gui/ has its own .gitignore for /target, but ignore any nested target
+# dirs from the repo root too in case cargo is ever run elsewhere.
+# Cargo.lock is intentionally NOT ignored -- assistant-gui is a binary
+# application, and committing the lockfile is what makes `cargo build`
+# reproducible across machines (unlike for a library crate, where it's
+# conventionally left out).
+target/
+**/*.rs.bk
+
+# --- Claude Code -------------------------------------------------------
+# Personal/local permission overrides -- analogous to a local .env,
+# not meant to be shared. A checked-in .claude/settings.json (team
+# defaults, no personal overrides) is fine and NOT excluded by this.
+.claude/settings.local.json
+
+# --- Editors / OS -------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

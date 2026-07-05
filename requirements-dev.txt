@@ -1,0 +1,4 @@
+# Development-only dependencies (not needed to run the assistant).
+-r requirements.txt
+pytest>=8.0.0
+flask>=3.0.0

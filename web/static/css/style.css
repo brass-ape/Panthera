@@ -1,0 +1,595 @@
+/* ---------------------------------------------------------------
+   Local AI Assistant -- "liquid aero" theme
+   Palette: coral #db5461, peach #ffd9ce, violet #593c8f,
+            aqua #8ef9f3, deep navy #171738
+   Glassmorphism (frosted translucency) + skeuomorphic gloss
+   (specular highlights, inset shadows) over a fruitiger-aero
+   gradient-orb backdrop.
+   --------------------------------------------------------------- */
+
+:root {
+  --coral: #db5461;
+  --peach: #ffd9ce;
+  --violet: #593c8f;
+  --aqua: #8ef9f3;
+  --navy: #171738;
+
+  --glass-fill: rgba(255, 255, 255, 0.08);
+  --glass-fill-strong: rgba(255, 255, 255, 0.14);
+  --glass-border: rgba(255, 255, 255, 0.28);
+  --glass-highlight: rgba(255, 255, 255, 0.55);
+  --text-primary: #f5f3ff;
+  --text-muted: rgba(245, 243, 255, 0.65);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  color: var(--text-primary);
+  background: var(--navy);
+  overflow-x: hidden;
+}
+
+/* ---------- fruitiger-aero backdrop: soft glowing gradient orbs ---------- */
+
+.aero-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(89, 60, 143, 0.55), transparent 55%),
+    radial-gradient(circle at 85% 15%, rgba(142, 249, 243, 0.28), transparent 50%),
+    radial-gradient(circle at 50% 100%, rgba(219, 84, 97, 0.30), transparent 60%),
+    linear-gradient(160deg, #171738 0%, #1e1b4b 45%, #171738 100%);
+}
+
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.55;
+  animation: float 18s ease-in-out infinite;
+}
+
+.orb-aqua {
+  width: 34vmax;
+  height: 34vmax;
+  top: -10vmax;
+  right: -8vmax;
+  background: radial-gradient(circle at 35% 35%, var(--aqua), transparent 70%);
+  animation-duration: 22s;
+}
+
+.orb-purple {
+  width: 40vmax;
+  height: 40vmax;
+  bottom: -15vmax;
+  left: -12vmax;
+  background: radial-gradient(circle at 40% 40%, var(--violet), transparent 70%);
+  animation-duration: 26s;
+  animation-delay: -6s;
+}
+
+.orb-coral {
+  width: 26vmax;
+  height: 26vmax;
+  bottom: 10vh;
+  right: 5vw;
+  background: radial-gradient(circle at 45% 45%, var(--coral), transparent 70%);
+  animation-duration: 20s;
+  animation-delay: -3s;
+}
+
+@keyframes float {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(2vmax, -3vmax) scale(1.06); }
+}
+
+/* ---------- layout ---------- */
+
+.app-shell {
+  position: relative;
+  z-index: 1;
+  max-width: 760px;
+  margin: 0 auto;
+  height: 100vh;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- shared glass panel ("liquid glass") ---------- */
+
+.glass {
+  background: linear-gradient(180deg, var(--glass-fill-strong), var(--glass-fill));
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    inset 0 0 40px rgba(255, 255, 255, 0.04),
+    0 20px 40px rgba(0, 0, 0, 0.35);
+  position: relative;
+}
+
+/* thin specular sheen along the top edge -- the skeuomorphic "glossy glass" cue */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.6), transparent 30%, transparent 70%, rgba(142, 249, 243, 0.25));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/* ---------- top bar ---------- */
+
+.topbar {
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-orb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: radial-gradient(circle at 32% 30%, #fff, var(--aqua) 40%, var(--violet) 100%);
+  box-shadow:
+    inset -3px -3px 6px rgba(23, 23, 56, 0.5),
+    inset 2px 2px 4px rgba(255, 255, 255, 0.8),
+    0 0 16px rgba(142, 249, 243, 0.6);
+}
+
+.brand h1 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: 0.02em;
+  background: linear-gradient(90deg, var(--aqua), var(--peach) 55%, var(--coral));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.status-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-live {
+  background: var(--aqua);
+  box-shadow: 0 0 8px var(--aqua);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+.icon-button {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.icon-button:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: rotate(20deg);
+}
+
+.icon-button:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 2px;
+}
+
+/* ---------- settings panel ---------- */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(10, 8, 30, 0.55);
+  backdrop-filter: blur(4px);
+}
+
+.settings-overlay.hidden {
+  display: none;
+}
+
+.settings-dialog {
+  width: min(480px, 100%);
+  max-height: 85vh;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--peach);
+}
+
+.settings-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.settings-hint code {
+  color: var(--aqua);
+}
+
+.override-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--coral);
+  box-shadow: 0 0 6px var(--coral);
+}
+
+.settings-form {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 6px;
+}
+
+.settings-form::-webkit-scrollbar {
+  width: 8px;
+}
+
+.settings-form::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--aqua), var(--violet));
+  border-radius: 999px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-field label {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-field input {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.settings-field input:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 1px;
+}
+
+.settings-error {
+  font-size: 0.8rem;
+  color: var(--coral);
+  background: rgba(219, 84, 97, 0.12);
+  border: 1px solid rgba(219, 84, 97, 0.35);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.settings-error.hidden {
+  display: none;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-save-button {
+  border: none;
+  border-radius: 999px;
+  padding: 9px 20px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #171738;
+  cursor: pointer;
+  background: linear-gradient(155deg, var(--peach), var(--coral) 85%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 6px 16px rgba(219, 84, 97, 0.35);
+  transition: transform 0.12s ease;
+}
+
+.settings-save-button:hover {
+  transform: translateY(-1px);
+}
+
+.settings-save-button:active {
+  transform: translateY(0);
+}
+
+/* ---------- chat panel ---------- */
+
+.chat-panel {
+  flex: 1;
+  min-height: 0;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 4px;
+}
+
+.messages::-webkit-scrollbar {
+  width: 8px;
+}
+
+.messages::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--aqua), var(--violet));
+  border-radius: 999px;
+}
+
+.messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- chat bubbles ---------- */
+
+.bubble {
+  max-width: 80%;
+  padding: 12px 16px;
+  border-radius: 18px;
+  line-height: 1.5;
+  font-size: 0.94rem;
+  position: relative;
+  overflow: hidden;
+  animation: rise 0.25s ease-out;
+  word-wrap: break-word;
+}
+
+.bubble p {
+  margin: 0;
+}
+
+.bubble p + p {
+  margin-top: 0.6em;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.bubble-user {
+  align-self: flex-end;
+  color: #171738;
+  background: linear-gradient(155deg, var(--aqua), #c7fbf8 60%, var(--peach));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 8px 20px rgba(142, 249, 243, 0.25);
+  border-bottom-right-radius: 4px;
+}
+
+.bubble-assistant {
+  align-self: flex-start;
+  color: var(--text-primary);
+  background: linear-gradient(155deg, rgba(89, 60, 143, 0.45), rgba(23, 23, 56, 0.35));
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  border-bottom-left-radius: 4px;
+}
+
+.bubble-error {
+  align-self: flex-start;
+  color: #fff;
+  background: linear-gradient(155deg, rgba(219, 84, 97, 0.55), rgba(89, 60, 143, 0.35));
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.bubble-glare {
+  position: absolute;
+  top: 0;
+  left: 10%;
+  width: 60%;
+  height: 45%;
+  background: radial-gradient(ellipse at top, rgba(255, 255, 255, 0.35), transparent 70%);
+  pointer-events: none;
+}
+
+/* ---------- typing indicator ---------- */
+
+.typing-indicator {
+  display: flex;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 10px 14px;
+}
+
+.typing-indicator.hidden {
+  display: none;
+}
+
+.typing-indicator span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--aqua);
+  box-shadow: 0 0 6px var(--aqua);
+  animation: bounce 1.2s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* ---------- composer ---------- */
+
+.composer {
+  padding: 10px 10px 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#message-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.98rem;
+  padding: 10px 0;
+}
+
+#message-input::placeholder {
+  color: var(--text-muted);
+}
+
+.send-button {
+  position: relative;
+  overflow: hidden;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  color: #171738;
+  background: linear-gradient(155deg, var(--peach), var(--coral) 85%);
+  box-shadow:
+    inset 0 2px 1px rgba(255, 255, 255, 0.7),
+    inset 0 -3px 6px rgba(89, 60, 143, 0.35),
+    0 6px 16px rgba(219, 84, 97, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.send-button:hover {
+  transform: translateY(-1px) scale(1.04);
+  box-shadow:
+    inset 0 2px 1px rgba(255, 255, 255, 0.8),
+    inset 0 -3px 6px rgba(89, 60, 143, 0.4),
+    0 10px 22px rgba(219, 84, 97, 0.55);
+}
+
+.send-button:active {
+  transform: translateY(0) scale(0.97);
+}
+
+.send-glare {
+  position: absolute;
+  top: -30%;
+  left: -10%;
+  width: 60%;
+  height: 60%;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 50%;
+  filter: blur(4px);
+  pointer-events: none;
+}
+
+.send-button svg {
+  position: relative;
+  z-index: 1;
+  margin-left: -1px;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 520px) {
+  .app-shell {
+    padding: 12px;
+  }
+  .bubble {
+    max-width: 90%;
+  }
+}

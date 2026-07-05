@@ -1,0 +1,12 @@
+[package]
+name = "assistant-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform desktop GUI for the local AI assistant (talks to webapp.py over HTTP)."
+
+[dependencies]
+eframe = "0.33"
+egui = "0.33"
+ehttp = { version = "0.7", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

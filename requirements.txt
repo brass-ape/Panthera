@@ -1,0 +1,25 @@
+# Core dependency for talking to Ollama's local HTTP API, and for the
+# default (DuckDuckGo/Brave) web search backends
+requests>=2.31.0
+
+# Terminal UI (banner, markdown rendering, spinners, colored prompts)
+rich>=13.7.0
+
+# Optional -- only needed to run the web front-end (webapp.py)
+# flask>=3.0.0
+
+# Optional -- only needed if you enable semantic search
+# (ASSISTANT_VECTOR_STORE=faiss)
+# faiss-cpu>=1.7.4
+
+# Optional -- only needed if you enable semantic search
+# (ASSISTANT_VECTOR_STORE=chroma)
+# chromadb>=0.4.24
+
+# Optional -- only needed if a FAISS backend is used, since faiss
+# expects numpy arrays as input
+# numpy>=1.26.0
+
+# Optional -- only needed if you set ASSISTANT_LLM_BACKEND=claude to
+# use the Anthropic API instead of Ollama
+# anthropic>=0.40.0
