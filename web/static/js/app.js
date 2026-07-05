@@ -12,19 +12,81 @@
     return div.innerHTML;
   }
 
-  // Very small markdown-ish renderer: paragraphs, **bold**, `code`.
-  // The assistant's answers are plain text/light markdown, not full
-  // HTML, so this is deliberately minimal rather than pulling in a
-  // markdown dependency for a single chat view.
-  function renderContent(text) {
-    const escaped = escapeHtml(text);
-    const withInline = escaped
+  // Small line-oriented markdown-ish renderer: headers, bullet/numbered
+  // lists, paragraphs, **bold**, `code`. The assistant's answers are
+  // plain text/light markdown, not full HTML, so this is deliberately
+  // minimal rather than pulling in a markdown dependency for a single
+  // chat view -- but it needs to at least handle the block-level
+  // markdown the model actually produces (headers, lists), or those
+  // render as literal "##"/"-" characters instead of formatted text.
+  function renderInline(escapedLine) {
+    return escapedLine
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
       .replace(/`(.+?)`/g, "<code>$1</code>");
-    return withInline
-      .split(/\n{2,}/)
-      .map((para) => `<p>${para.replace(/\n/g, "<br>")}</p>`)
-      .join("");
+  }
+
+  function renderContent(text) {
+    const lines = escapeHtml(text).split("\n");
+    const htmlParts = [];
+    let paragraphLines = [];
+    let listItems = [];
+    let listTag = null; // "ul" | "ol"
+
+    const flushParagraph = () => {
+      if (paragraphLines.length) {
+        htmlParts.push(`<p>${paragraphLines.join("<br>")}</p>`);
+        paragraphLines = [];
+      }
+    };
+    const flushList = () => {
+      if (listItems.length) {
+        htmlParts.push(`<${listTag}>${listItems.map((item) => `<li>${item}</li>`).join("")}</${listTag}>`);
+        listItems = [];
+        listTag = null;
+      }
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        flushParagraph();
+        flushList();
+        continue;
+      }
+
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        flushParagraph();
+        flushList();
+        const level = Math.min(heading[1].length + 2, 6); // keep subordinate to the bubble's own heading
+        htmlParts.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+        continue;
+      }
+
+      const bullet = line.match(/^[-*]\s+(.*)$/);
+      if (bullet) {
+        flushParagraph();
+        if (listTag && listTag !== "ul") flushList();
+        listTag = "ul";
+        listItems.push(renderInline(bullet[1]));
+        continue;
+      }
+
+      const numbered = line.match(/^\d+\.\s+(.*)$/);
+      if (numbered) {
+        flushParagraph();
+        if (listTag && listTag !== "ol") flushList();
+        listTag = "ol";
+        listItems.push(renderInline(numbered[1]));
+        continue;
+      }
+
+      flushList();
+      paragraphLines.push(renderInline(line));
+    }
+    flushParagraph();
+    flushList();
+    return htmlParts.join("");
   }
 
   function addBubble(text, role) {

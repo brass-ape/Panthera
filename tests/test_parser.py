@@ -68,6 +68,29 @@ class TestParseLlmResponse:
         parsed = parse_llm_response('{"tool": "web_fetch"}')
         assert not parsed.is_tool_call
 
+    def test_propose_plugin_tool_call(self):
+        parsed = parse_llm_response(
+            '{"tool": "propose_plugin", "name": "roll_dice", '
+            '"description": "Rolls a die", "code": "TOOL_NAME = 1"}'
+        )
+        assert parsed.is_tool_call
+        assert parsed.tool_call.tool == "propose_plugin"
+        assert parsed.tool_call.args["name"] == "roll_dice"
+
+    def test_propose_plugin_rejects_bad_name(self):
+        parsed = parse_llm_response(
+            '{"tool": "propose_plugin", "name": "../escape", '
+            '"description": "x", "code": "y"}'
+        )
+        assert not parsed.is_tool_call
+
+    def test_propose_plugin_rejects_uppercase_name(self):
+        parsed = parse_llm_response(
+            '{"tool": "propose_plugin", "name": "RollDice", '
+            '"description": "x", "code": "y"}'
+        )
+        assert not parsed.is_tool_call
+
 
 class TestValidateToolCall:
     def test_missing_tool_field_raises(self):

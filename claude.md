@@ -18,19 +18,22 @@ enabled by default via DuckDuckGo, no API key required).
 
 | File | Responsibility |
 |---|---|
-| `config.py` | Single source of truth for all settings (`CONFIG` singleton). Everything configurable lives here, override via env vars. |
+| `config.py` | Single source of truth for all settings (`CONFIG` singleton). Precedence: `config.json` > env vars > hardcoded defaults. `EDITABLE_FIELDS` + `save_overrides`/`reload_from_config_file` back the web UI/GUI settings panels. No secret ever lives here. |
 | `utils.py` | `resolve_safe_path` — the only function allowed to decide whether a vault-relative path is safe. Also small helpers (truncate, tokenize). |
-| `parser.py` | Turns raw LLM text into either a validated `ToolCall` or final-answer text. Owns `VALID_TOOLS` and the required-args schema. |
-| `tools.py` | Executes a `ToolCall` against `VaultMemory`. One handler function per tool, registered in the `_HANDLERS` dict. |
-| `memory.py` | `VaultMemory` — all vault file I/O (read/write/append/remove/list/create_folder) plus `Retriever` protocol + `KeywordRetriever` (current default search). |
+| `parser.py` | Turns raw LLM text into either a validated `ToolCall` or final-answer text. Owns `VALID_TOOLS` and the required-args schema (extended at startup by `plugins.register_loaded_plugins`). |
+| `tools.py` | Executes a `ToolCall` against `VaultMemory`. One handler function per tool, registered in the `_HANDLERS` dict (also extended by plugins). |
+| `memory.py` | `VaultMemory` — all vault file I/O (read/write/append/remove/list/create_folder/read_resources) plus `Retriever` protocol + `KeywordRetriever` (current default search). |
 | `embeddings.py` | Optional semantic search: `EmbeddingRetriever` implements the same `Retriever` protocol so it's a drop-in replacement for `KeywordRetriever`. Not wired in by default. |
 | `websearch.py` | Web search/fetch: `SearchProvider` Protocol with `DuckDuckGoSearchProvider` (default, no key) and `BraveSearchProvider` (needs `BRAVE_API_KEY`), plus `fetch_url` for `web_fetch`. The only module besides `agent.py` with outbound internet access. |
+| `sysinfo.py` | Read-only local date/time + system specs, injected fresh into the system prompt every turn (see `agent.py`'s `_build_messages`). No tool call needed. |
+| `plugins.py` | Human-approved tool extensibility: `register_loaded_plugins()` imports `plugins/*.py` (trusted, project-level) and registers each as a real tool. Never imports from `vault/plugins_proposed/` — see "Plugin system" below. |
+| `manage_plugins.py` | Standalone CLI (`list`/`show`/`approve`/`reject`) — the *only* path from an agent-proposed plugin to an actually-loaded one. |
 | `conversation.py` | `ConversationManager` — rolling history + summarization of old turns into `vault/conversations/`. |
-| `agent.py` | `OllamaClient` + `ClaudeClient` (the *only* module that talks to an LLM backend, selected via `CONFIG.llm_backend`) + `Agent` (the tool-calling loop, retrieval wiring, automatic memory creation). |
+| `agent.py` | `OllamaClient` + `ClaudeClient` (the *only* module that talks to an LLM backend, selected via `CONFIG.llm_backend`) + `Agent` (the tool-calling loop, retrieval wiring, automatic memory creation, plugin registration). |
 | `prompts.py` | Every prompt template. Nothing else should hardcode prompt text. |
-| `main.py` | CLI entry point / REPL (rich-rendered: banner panel, markdown replies, spinner). |
-| `webapp.py` | Optional Flask web front-end — same rules as `main.py`: calls `Agent.run_turn`, no agent logic of its own. Templates/assets in `web/`. Also exposes `/api/status` (JSON) for non-HTML clients. |
-| `gui/` | Rust/egui desktop GUI — a separate Cargo crate, HTTP client of `webapp.py` only (`/api/status`, `/api/chat`). No agent/tool logic; don't add any there. See `gui/README.md`. |
+| `main.py` | CLI entry point / REPL (rich-rendered: banner panel, streamed replies via `on_event`, markdown, spinner). |
+| `webapp.py` | Optional Flask web front-end — same rules as `main.py`: calls `Agent.run_turn`, no agent logic of its own. Templates/assets in `web/`. Also exposes `/api/status` and `/api/config` (JSON) for non-HTML clients. |
+| `gui/` | Rust/egui desktop GUI — a separate Cargo crate, HTTP client of `webapp.py` only (`/api/status`, `/api/chat`, `/api/config`). No agent/tool logic; don't add any there. See `gui/README.md`. |
 | `tests/` | pytest suite. See "Running / testing locally" below for the CONFIG-patching fixtures. |
 
 **Rule of thumb:** if you're adding a capability, ask which of these
@@ -46,7 +49,18 @@ layers it belongs to before writing code. New tools go in
   `Path()`, or similar on a model-supplied path directly.
 - **No shell or code execution tools.** This was an explicit
   requirement from the start and should stay that way unless the user
-  asks for it directly and understands the risk.
+  asks for it directly and understands the risk. The plugin system
+  (`plugins.py`, the `propose_plugin` tool) does NOT violate this: the
+  model can only ever write text to a sandboxed vault folder
+  (`vault/plugins_proposed/`) via the ordinary `VaultMemory.write`
+  path — that text is never imported or executed by anything the
+  model controls. The only route from a proposal to an actually-loaded
+  tool is a human running `manage_plugins.py approve <name>` (which
+  copies the file into the trusted, non-vault `plugins/` directory)
+  followed by an app restart. If you're tempted to make approval
+  automatic, or to have `propose_plugin` write directly into
+  `plugins/`, or to hot-reload without a restart — don't; that's
+  exactly the human-in-the-loop gate this was built to keep.
 - **Tool calls are strict JSON, one object, no XML.** `parser.py`'s
   `_extract_json_object` already handles the common case of models
   wrapping JSON in markdown fences — don't relax the schema validation

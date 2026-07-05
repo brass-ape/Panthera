@@ -167,25 +167,29 @@ assistant/
 ├── parser.py                Strict JSON tool-call parsing & validation
 ├── prompts.py                 All prompt templates
 ├── sysinfo.py                   Local date/time + system specs for context
-├── conversation.py                Conversation history + summarization
-├── embeddings.py                    Semantic search interface (optional)
-├── websearch.py                       Web search / web fetch tools
-├── utils.py                             Path sandboxing & small helpers
-├── web/                                    Templates/static assets for webapp.py
+├── plugins.py                     Loads/registers human-approved plugins/*.py
+├── manage_plugins.py                CLI to review/approve/reject proposed plugins
+├── conversation.py                    Conversation history + summarization
+├── embeddings.py                        Semantic search interface (optional)
+├── websearch.py                           Web search / web fetch tools
+├── utils.py                                 Path sandboxing & small helpers
+├── web/                                        Templates/static assets for webapp.py
 │   ├── templates/index.html
 │   └── static/{css,js}/
-├── gui/                                       Rust/egui desktop GUI (client of webapp.py)
-├── tests/                                    pytest suite
-├── .github/workflows/ci.yml                     GitHub Actions: pytest + gui build
+├── gui/                                           Rust/egui desktop GUI (client of webapp.py)
+├── plugins/                                          Approved plugin tools (see plugins/README.md)
+├── tests/                                            pytest suite
+├── .github/workflows/ci.yml                             GitHub Actions: pytest + gui build
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── README.md
-└── vault/                                          (gitignored -- your data)
+└── vault/                                                  (gitignored -- your data)
     ├── people/
     ├── projects/
     ├── journal/
     ├── facts/
-    ├── resources/       always-included reference material (see Features)
+    ├── resources/               always-included reference material (see Features)
+    ├── plugins_proposed/        agent-drafted plugins awaiting human review
     └── conversations/
 ```
 
@@ -320,9 +324,31 @@ rewrite:
 - **Native desktop client** — implemented in `gui/` (Rust/egui),
   talking to `webapp.py`'s HTTP API rather than reimplementing the
   agent loop.
-- **Plugin API** — the `_HANDLERS` dict in `tools.py` and `VALID_TOOLS`
-  set in `parser.py` are the two places a new tool needs to register;
-  a future `plugins/` loader could populate both dynamically.
+
+## Plugin system (human-approved)
+
+The assistant can extend its own tool set, with a mandatory human
+review step between "the model wrote some code" and "that code runs":
+
+1. The model calls `propose_plugin` — this only ever writes plain text
+   to `vault/plugins_proposed/<name>.py` (+ a manifest). Nothing is
+   imported or executed by this call.
+2. A human reviews and decides:
+
+   ```bash
+   python manage_plugins.py list            # see what's pending
+   python manage_plugins.py show <name>     # read the proposed source
+   python manage_plugins.py approve <name>  # copy it into plugins/
+   python manage_plugins.py reject <name>   # or delete it instead
+   ```
+3. Approving copies the file into the trusted `plugins/` directory
+   (outside the vault sandbox). It becomes a real, callable tool the
+   next time you restart the assistant.
+
+See `plugins/README.md` for the plugin file contract (`TOOL_NAME`,
+`REQUIRED_ARGS`, `DESCRIPTION`, `handle(memory, args)`). This is not a
+code-execution tool given to the model — the model can only draft
+text; a human explicitly chooses what, if anything, ever runs.
 
 ## Safety notes
 
@@ -331,6 +357,10 @@ rewrite:
   leaving the vault.
 - No shell or code execution tools are implemented or planned as
   "just another tool" — anything like that should be reviewed
-  carefully and sandboxed independently.
+  carefully and sandboxed independently. The plugin system's
+  `propose_plugin` tool only ever writes text to a sandboxed vault
+  folder; nothing the model does can execute code or reach the
+  trusted `plugins/` directory without a human running
+  `manage_plugins.py approve` and restarting the app.
 - Secrets (passwords, API keys) are explicitly excluded from the
   memory policy in `prompts.py`.

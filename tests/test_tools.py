@@ -72,6 +72,48 @@ class TestWebSearchTool:
         assert "No web results found" in result
 
 
+class TestProposePluginTool:
+    def test_writes_source_and_manifest_without_executing(self, executor, vault_dir):
+        result = executor.execute(
+            ToolCall(
+                tool="propose_plugin",
+                args={
+                    "name": "roll_dice",
+                    "description": "Rolls a die",
+                    "code": "TOOL_NAME = 'roll_dice'\n",
+                },
+            )
+        )
+        assert "not active" in result
+        assert "manage_plugins.py approve roll_dice" in result
+
+        source = vault_dir / "plugins_proposed" / "roll_dice.py"
+        manifest = vault_dir / "plugins_proposed" / "roll_dice.manifest.json"
+        assert source.read_text() == "TOOL_NAME = 'roll_dice'\n"
+        assert manifest.exists()
+
+        import json
+
+        data = json.loads(manifest.read_text())
+        assert data["name"] == "roll_dice"
+        assert data["description"] == "Rolls a die"
+        assert data["status"] == "pending"
+
+    def test_does_not_touch_the_real_plugins_directory(self, executor, vault_dir):
+        import plugins as plugins_module
+
+        executor.execute(
+            ToolCall(
+                tool="propose_plugin",
+                args={"name": "sneaky", "description": "x", "code": "import os; os.system('echo hi')"},
+            )
+        )
+        # Nothing should exist in the trusted plugins/ dir just because
+        # a plugin was proposed -- only manage_plugins.py can put
+        # something there.
+        assert not (plugins_module.PLUGINS_DIR / "sneaky.py").exists()
+
+
 class TestWebFetchTool:
     def test_web_fetch_wraps_content_as_untrusted(self, executor, monkeypatch):
         import tools

@@ -13,7 +13,9 @@ That layering is what makes the sandboxing guarantees auditable.
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
 
 from config import CONFIG
 from memory import VaultError, VaultMemory
@@ -145,6 +147,39 @@ def _handle_web_fetch(memory: VaultMemory, args: dict) -> str:
     return _wrap_untrusted(f"Content fetched from {args['url']}:\n{truncated}")
 
 
+def _handle_propose_plugin(memory: VaultMemory, args: dict) -> str:
+    """Draft a new tool as a plugin module -- writes plain text to a
+    sandboxed vault folder and nothing else. This is NOT a code
+    execution tool: the file is never imported here or anywhere else
+    in this request. It only becomes a real, callable tool if a human
+    runs `python manage_plugins.py approve <name>` (which copies it
+    into the trusted plugins/ directory, outside the vault) and the
+    process is then restarted -- see plugins.py's module docstring for
+    the full flow.
+    """
+    name = args["name"]
+    py_path = f"plugins_proposed/{name}.py"
+    manifest_path = f"plugins_proposed/{name}.manifest.json"
+
+    memory.write(py_path, args["code"])
+    manifest = {
+        "name": name,
+        "description": args["description"],
+        "proposed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "status": "pending",
+    }
+    memory.write(manifest_path, json.dumps(manifest, indent=2) + "\n")
+
+    return (
+        f"Drafted plugin {name!r} to vault/{py_path} (not active). "
+        "A human must review it with `python manage_plugins.py show "
+        f"{name}` and run `python manage_plugins.py approve {name}` "
+        "before it becomes a real tool, and the app must be restarted "
+        "for it to take effect. Nothing was executed or activated by "
+        "this call."
+    )
+
+
 _HANDLERS = {
     "read": _handle_read,
     "write": _handle_write,
@@ -156,4 +191,5 @@ _HANDLERS = {
     "create_folder": _handle_create_folder,
     "web_search": _handle_web_search,
     "web_fetch": _handle_web_fetch,
+    "propose_plugin": _handle_propose_plugin,
 }

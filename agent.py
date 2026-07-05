@@ -20,6 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable, Union
 
+import plugins
 import sysinfo
 from config import CONFIG
 from conversation import ConversationManager
@@ -323,6 +324,7 @@ class Agent:
         self.memory = memory or VaultMemory()
         self.tools = ToolExecutor(self.memory)
         self.conversation = ConversationManager(self.memory, summarizer=self.client.complete_text)
+        self.loaded_plugins = plugins.register_loaded_plugins()
 
     def _build_messages(self, user_message: str) -> list[dict[str, str]]:
         """Assemble the full message list for this turn: system
@@ -331,6 +333,10 @@ class Agent:
         """
         system_prompt = build_full_system_prompt()
         system_prompt = system_prompt + "\n\n" + build_current_context(sysinfo.context_block())
+
+        plugin_block = plugins.describe_loaded_plugins(self.loaded_plugins)
+        if plugin_block:
+            system_prompt = system_prompt + "\n\n" + plugin_block
 
         resources = self.memory.read_resources()
         if resources:
@@ -418,33 +424,55 @@ class Agent:
         )
 
     def _maybe_create_memory(self) -> None:
-        """After a turn, ask the model whether anything is worth
-        remembering, and if so, execute the resulting write/append
-        tool call. This runs at most once per turn to keep cost low.
+        """After a turn, repeatedly ask the model whether anything is
+        worth remembering, executing each write/append it requests,
+        until it says nothing further is worth saving or
+        CONFIG.max_memory_writes_per_turn is reached.
+
+        This loops (rather than asking once) because the memory policy
+        is deliberately permissive -- a single turn can easily contain
+        several distinct facts worth their own note, and asking only
+        once would silently drop everything but the first.
         """
         recent = self.conversation.as_message_list()[-2:]  # last user+assistant turn
         transcript = "\n".join(f"{t['role']}: {t['content']}" for t in recent)
-        prompt = MEMORY_CREATION_PROMPT.format(conversation=transcript)
 
-        try:
-            raw_response = self.client.complete_text(prompt)
-        except LLMConnectionError as exc:
-            logger.warning("Automatic memory creation skipped (LLM unreachable): %s", exc)
-            return
+        saved_summaries: list[str] = []
+        for _ in range(CONFIG.max_memory_writes_per_turn):
+            already_saved_section = ""
+            if saved_summaries:
+                already_saved_section = (
+                    "Already saved so far this turn (do not repeat these):\n"
+                    + "\n".join(f"- {s}" for s in saved_summaries)
+                    + "\n\n"
+                )
+            prompt = MEMORY_CREATION_PROMPT.format(conversation=transcript, already_saved_section=already_saved_section)
 
-        parsed = parse_llm_response(raw_response)
-        if not parsed.is_tool_call:
-            logger.debug("Memory-creation response was not a tool call; nothing stored.")
-            return
+            try:
+                raw_response = self.client.complete_text(prompt)
+            except LLMConnectionError as exc:
+                logger.warning("Automatic memory creation skipped (LLM unreachable): %s", exc)
+                return
 
-        call = parsed.tool_call
-        assert call is not None
-        if call.tool == "none":
-            logger.debug("Model decided nothing was worth remembering this turn.")
-            return
-        if call.tool not in ("write", "append"):
-            logger.debug("Ignoring unexpected tool %r from memory-creation prompt.", call.tool)
-            return
+            parsed = parse_llm_response(raw_response)
+            if not parsed.is_tool_call:
+                logger.debug("Memory-creation response was not a tool call; stopping.")
+                return
 
-        result = self.tools.execute(call)
-        logger.info("Automatic memory creation: %s", result)
+            call = parsed.tool_call
+            assert call is not None
+            if call.tool == "none":
+                logger.debug("Model decided nothing further was worth remembering this turn.")
+                return
+            if call.tool not in ("write", "append"):
+                logger.debug("Ignoring unexpected tool %r from memory-creation prompt.", call.tool)
+                return
+
+            result = self.tools.execute(call)
+            logger.info("Automatic memory creation: %s", result)
+            saved_summaries.append(f"{call.tool} {call.args.get('file', '?')}")
+
+        # Only reached if the loop ran to completion without an early
+        # `return` above -- i.e. the model kept finding more to save
+        # right up to the cap.
+        logger.debug("Reached max_memory_writes_per_turn (%d).", CONFIG.max_memory_writes_per_turn)

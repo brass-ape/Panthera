@@ -19,10 +19,17 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger("assistant.parser")
+
+# Plugin tool names double as Python module/identifier names (see
+# plugins.py), so they're restricted to a conservative bare-identifier
+# charset -- no path separators, no "..", nothing that could escape
+# vault/plugins_proposed/ when used as a filename.
+_PLUGIN_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 VALID_TOOLS = {
     "read",
@@ -35,10 +42,14 @@ VALID_TOOLS = {
     "create_folder",
     "web_search",
     "web_fetch",
+    "propose_plugin",
     "none",  # used only by the memory-creation prompt
 }
 
 # Required argument names per tool, beyond "tool" itself.
+# NOTE: register_loaded_plugins() (see plugins.py) extends this dict
+# at startup with any human-approved plugin tools -- this is the
+# built-in set only.
 _REQUIRED_ARGS: dict[str, tuple[str, ...]] = {
     "read": ("file",),
     "write": ("file", "content"),
@@ -50,6 +61,7 @@ _REQUIRED_ARGS: dict[str, tuple[str, ...]] = {
     "create_folder": ("folder",),
     "web_search": ("query",),
     "web_fetch": ("url",),
+    "propose_plugin": ("name", "description", "code"),
     "none": (),
 }
 
@@ -140,6 +152,14 @@ def validate_tool_call(obj: dict[str, Any]) -> ToolCall:
         files = obj.get("files")
         if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
             raise ToolCallValidationError("'files' must be a list of strings.")
+
+    if tool == "propose_plugin":
+        name = obj.get("name")
+        if not isinstance(name, str) or not _PLUGIN_NAME_RE.match(name):
+            raise ToolCallValidationError(
+                "'name' must be a lowercase identifier matching "
+                f"{_PLUGIN_NAME_RE.pattern!r} (no paths, no traversal)."
+            )
 
     args = {k: v for k, v in obj.items() if k != "tool"}
     return ToolCall(tool=tool, args=args)

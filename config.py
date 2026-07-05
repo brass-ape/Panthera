@@ -182,6 +182,13 @@ class Config:
     max_tool_iterations: int = field(
         default_factory=lambda: _setting_int("max_tool_iterations", "ASSISTANT_MAX_TOOL_ITERATIONS", 16)
     )
+    # How many separate write/append calls the automatic memory-creation
+    # step (see agent.py's _maybe_create_memory) may make after a single
+    # turn -- the memory policy is deliberately permissive, so a turn
+    # with several distinct facts should be able to save more than one.
+    max_memory_writes_per_turn: int = field(
+        default_factory=lambda: _setting_int("max_memory_writes_per_turn", "ASSISTANT_MAX_MEMORY_WRITES", 5)
+    )
 
     # --- Memory / retrieval -------------------------------------------
     max_search_results: int = field(default_factory=lambda: _setting_int("max_search_results", "ASSISTANT_MAX_SEARCH_RESULTS", 5))
@@ -221,7 +228,7 @@ class Config:
 
         This is idempotent and safe to call on every startup.
         """
-        subfolders = ("people", "projects", "journal", "facts", "conversations", "resources")
+        subfolders = ("people", "projects", "journal", "facts", "conversations", "resources", "plugins_proposed")
         self.vault_dir.mkdir(parents=True, exist_ok=True)
         for name in subfolders:
             (self.vault_dir / name).mkdir(parents=True, exist_ok=True)
@@ -246,6 +253,7 @@ EDITABLE_FIELDS: dict[str, str] = {
     "max_web_fetch_chars": "int",
     "web_request_timeout_seconds": "int",
     "max_tool_iterations": "int",
+    "max_memory_writes_per_turn": "int",
     "max_search_results": "int",
     "max_context_files": "int",
     "max_file_chars_in_context": "int",
