@@ -20,12 +20,15 @@ across every request.
 
 from __future__ import annotations
 
+import json
 import logging
+import queue
+import threading
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
 import config as config_module
-from agent import Agent, LLMConnectionError
+from agent import Agent, LLMConnectionError, TokenEvent, ToolCallEvent, ToolResultEvent
 from config import CONFIG
 from main import configure_logging
 
@@ -148,6 +151,63 @@ def chat():
         return jsonify({"error": "Something went wrong on my end -- check assistant.log for details."}), 500
 
     return jsonify({"reply": answer})
+
+
+@app.route("/api/chat/stream", methods=["POST"])
+def chat_stream():
+    """Server-Sent Events version of /api/chat: emits one JSON object
+    per SSE frame as the turn progresses --
+    {"type": "token", "text": ...} for each streamed chunk,
+    {"type": "tool_call"/"tool_result", ...} around tool execution, and
+    a final {"type": "final", "text": ...} or {"type": "error", ...}.
+
+    Agent.run_turn's on_event callback is synchronous, so the actual
+    turn runs on a background thread; this generator just relays
+    whatever that thread pushes onto a queue, as it arrives, which is
+    what makes this an actual stream rather than one big blocking
+    response.
+    """
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "Message must not be empty."}), 400
+
+    events: queue.Queue = queue.Queue()
+
+    def on_event(event) -> None:
+        if isinstance(event, TokenEvent):
+            events.put({"type": "token", "text": event.text})
+        elif isinstance(event, ToolCallEvent):
+            events.put({"type": "tool_call", "tool": event.tool, "args": event.args})
+        elif isinstance(event, ToolResultEvent):
+            events.put({"type": "tool_result", "tool": event.tool})
+
+    def worker() -> None:
+        try:
+            answer = _agent.run_turn(message, on_event=on_event)
+            events.put({"type": "final", "text": answer})
+        except LLMConnectionError as exc:
+            events.put({"type": "error", "text": str(exc)})
+        except Exception:  # noqa: BLE001 - never let the worker thread crash silently
+            logger.exception("Unexpected error handling streamed chat request")
+            events.put({"type": "error", "text": "Something went wrong on my end -- check assistant.log for details."})
+        finally:
+            events.put(None)  # sentinel: tells generate() the turn is over
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def generate():
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":

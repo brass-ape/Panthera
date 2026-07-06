@@ -46,6 +46,40 @@ VALID_TOOLS = {
     "none",  # used only by the memory-creation prompt
 }
 
+# Models trained on other agent frameworks' tool-naming conventions
+# reach for plausible-sounding synonyms (e.g. "create_file") instead of
+# this app's actual tool names, even with TOOL_INSTRUCTIONS spelling
+# the real ones out. Rather than losing that tool call entirely (see
+# validate_tool_call, which would otherwise raise "Unknown or invalid
+# tool"), rewrite known synonyms to the real tool name before
+# validating -- same rationale as json.loads(strict=False) above: the
+# model's intent is unambiguous, only the exact spelling was wrong.
+# This does NOT bypass argument/path validation -- an aliased call
+# still has to satisfy the real tool's schema afterward.
+_TOOL_ALIASES: dict[str, str] = {
+    "create_file": "write",
+    "write_file": "write",
+    "save_file": "write",
+    "edit_file": "write",
+    "update_file": "write",
+    "delete_file": "remove",
+    "remove_file": "remove",
+    "read_file": "read",
+    "get_file": "read",
+    "list_dir": "list_files",
+    "list_directory": "list_files",
+    "ls": "list_files",
+    "mkdir": "create_folder",
+    "make_folder": "create_folder",
+    "make_directory": "create_folder",
+    "create_directory": "create_folder",
+    "search_web": "web_search",
+    "websearch": "web_search",
+    "fetch_url": "web_fetch",
+    "fetch_web": "web_fetch",
+    "get_url": "web_fetch",
+}
+
 # Required argument names per tool, beyond "tool" itself.
 # NOTE: register_loaded_plugins() (see plugins.py) extends this dict
 # at startup with any human-approved plugin tools -- this is the
@@ -138,6 +172,9 @@ def validate_tool_call(obj: dict[str, Any]) -> ToolCall:
         raise ToolCallValidationError("Missing required 'tool' field.")
 
     tool = obj["tool"]
+    if isinstance(tool, str) and tool in _TOOL_ALIASES:
+        logger.debug("Rewriting tool alias %r to %r.", tool, _TOOL_ALIASES[tool])
+        tool = _TOOL_ALIASES[tool]
     if not isinstance(tool, str) or tool not in VALID_TOOLS:
         raise ToolCallValidationError(f"Unknown or invalid tool: {tool!r}")
 
@@ -177,7 +214,18 @@ def parse_llm_response(text: str) -> ParsedResponse:
         return ParsedResponse(final_text=text.strip())
 
     try:
-        obj = json.loads(candidate)
+        # strict=False allows raw control characters (unescaped literal
+        # newlines/tabs) inside JSON string values. Small local models
+        # very commonly emit multi-line "content" fields as literal
+        # newlines instead of "\n" escapes -- that's invalid JSON by
+        # the strict spec, but the intent is completely unambiguous,
+        # so tolerating it here recovers a real, well-formed tool call
+        # instead of falling back to dumping the raw JSON as the
+        # "final answer" (this is not a schema relaxation -- the
+        # object still has to fully validate below; it just stops a
+        # cosmetic escaping slip from discarding an otherwise-valid
+        # tool call).
+        obj = json.loads(candidate, strict=False)
     except json.JSONDecodeError as exc:
         logger.debug("JSON decode failed, treating response as final text: %s", exc)
         return ParsedResponse(final_text=text.strip())

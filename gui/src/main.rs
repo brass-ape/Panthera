@@ -42,10 +42,64 @@ struct ChatRequestBody<'a> {
     message: &'a str,
 }
 
-#[derive(Deserialize, Default)]
-struct ChatResponseBody {
-    reply: Option<String>,
-    error: Option<String>,
+/// One Server-Sent Event frame from POST /api/chat/stream (see
+/// webapp.py's chat_stream handler for the Python side of this
+/// contract). Untagged/unrecognized `type` values are simply left
+/// undeserializable by serde and dropped by parse_sse_frame below.
+#[derive(Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamEvent {
+    Token { text: String },
+    ToolCall {
+        tool: String,
+        #[serde(default)]
+        #[allow(dead_code)] // not rendered yet, but part of the wire contract
+        args: serde_json::Value,
+    },
+    ToolResult {
+        #[allow(dead_code)]
+        tool: String,
+    },
+    Final { text: String },
+    Error { text: String },
+}
+
+/// Accumulates raw bytes from `ehttp::streaming::fetch` into complete
+/// `\n\n`-delimited SSE frames, and holds the decoded events a frame
+/// yields until the next `update()` drains them. Needs a mutex because
+/// the streaming callback fires repeatedly from a background thread
+/// (unlike the one-shot `Shared<T>` callbacks elsewhere in this file).
+#[derive(Default)]
+struct StreamState {
+    byte_buffer: Vec<u8>,
+    events: Vec<StreamEvent>,
+}
+
+fn parse_sse_frame(frame: &[u8]) -> Option<StreamEvent> {
+    let text = std::str::from_utf8(frame).ok()?;
+    for line in text.lines() {
+        if let Some(json_str) = line.strip_prefix("data: ") {
+            return serde_json::from_str(json_str).ok();
+        }
+    }
+    None
+}
+
+/// Drains complete `\n\n`-terminated frames out of `state.byte_buffer`
+/// into `state.events`, leaving any trailing partial frame in the
+/// buffer for the next chunk to complete.
+fn drain_sse_frames(state: &mut StreamState) {
+    loop {
+        let boundary = state
+            .byte_buffer
+            .windows(2)
+            .position(|w| w == b"\n\n");
+        let Some(pos) = boundary else { break };
+        let frame: Vec<u8> = state.byte_buffer.drain(..pos + 2).collect();
+        if let Some(event) = parse_sse_frame(&frame) {
+            state.events.push(event);
+        }
+    }
 }
 
 #[derive(Deserialize, Clone, Default)]
@@ -90,7 +144,12 @@ struct AssistantApp {
     messages: Vec<ChatMessage>,
     input: String,
     pending: bool,
-    pending_reply: Shared<Result<String, String>>,
+    pending_stream: Arc<Mutex<StreamState>>,
+    // Live, plain-text preview of the current reply while it streams
+    // in -- same idea as main.py's rich.Live preview and the web UI's
+    // "live" bubble: only the finished answer gets markdown-rendered.
+    streaming_preview: Option<String>,
+    streaming_status_lines: Vec<String>,
     status: Option<StatusInfo>,
     pending_status: Shared<Result<StatusInfo, String>>,
 
@@ -117,7 +176,9 @@ impl AssistantApp {
             }],
             input: String::new(),
             pending: false,
-            pending_reply: Arc::new(Mutex::new(None)),
+            pending_stream: Arc::new(Mutex::new(StreamState::default())),
+            streaming_preview: None,
+            streaming_status_lines: Vec::new(),
             status: None,
             pending_status: Arc::new(Mutex::new(None)),
 
@@ -160,34 +221,63 @@ impl AssistantApp {
         });
         self.input.clear();
         self.pending = true;
+        self.streaming_preview = Some(String::new());
+        self.streaming_status_lines.clear();
 
-        let url = format!("{}/api/chat", self.base_url);
+        let url = format!("{}/api/chat/stream", self.base_url);
         let body = serde_json::to_vec(&ChatRequestBody { message: &text })
             .expect("ChatRequestBody always serializes");
         let mut request = ehttp::Request::post(url, body);
         request.headers = ehttp::Headers::new(&[
-            ("Accept", "application/json"),
+            ("Accept", "text/event-stream"),
             ("Content-Type", "application/json"),
         ]);
 
-        let shared = self.pending_reply.clone();
+        // Fresh shared state per request -- self.pending_stream is
+        // swapped to this new Arc so update() only ever drains events
+        // belonging to the turn currently in flight.
+        let shared: Arc<Mutex<StreamState>> = Arc::new(Mutex::new(StreamState::default()));
+        self.pending_stream = shared.clone();
         let ctx = ctx.clone();
-        ehttp::fetch(request, move |result| {
-            let parsed: Result<String, String> = match result {
-                Ok(response) => {
-                    let body: ChatResponseBody = response.json().unwrap_or_default();
-                    if let Some(reply) = body.reply {
-                        Ok(reply)
-                    } else if let Some(error) = body.error {
-                        Err(error)
-                    } else {
-                        Err(format!("Unexpected response (HTTP {})", response.status))
+
+        ehttp::streaming::fetch(request, move |result| {
+            use std::ops::ControlFlow;
+            match result {
+                Ok(ehttp::streaming::Part::Response(response)) => {
+                    if !response.ok {
+                        let mut state = shared.lock().unwrap();
+                        state.events.push(StreamEvent::Error {
+                            text: format!("HTTP {}", response.status),
+                        });
+                        drop(state);
+                        ctx.request_repaint();
+                        return ControlFlow::Break(());
                     }
+                    ControlFlow::Continue(())
                 }
-                Err(err) => Err(format!("Could not reach the assistant server: {err}")),
-            };
-            *shared.lock().unwrap() = Some(parsed);
-            ctx.request_repaint();
+                Ok(ehttp::streaming::Part::Chunk(chunk)) => {
+                    if chunk.is_empty() {
+                        // End of stream (see ehttp::streaming::Part::Chunk's
+                        // docs) -- nothing left to read.
+                        return ControlFlow::Break(());
+                    }
+                    let mut state = shared.lock().unwrap();
+                    state.byte_buffer.extend_from_slice(&chunk);
+                    drain_sse_frames(&mut state);
+                    drop(state);
+                    ctx.request_repaint();
+                    ControlFlow::Continue(())
+                }
+                Err(err) => {
+                    let mut state = shared.lock().unwrap();
+                    state.events.push(StreamEvent::Error {
+                        text: format!("Could not reach the assistant server: {err}"),
+                    });
+                    drop(state);
+                    ctx.request_repaint();
+                    ControlFlow::Break(())
+                }
+            }
         });
     }
 
@@ -341,17 +431,42 @@ impl eframe::App for AssistantApp {
             }
         }
 
-        if let Some(result) = self.pending_reply.lock().unwrap().take() {
-            self.pending = false;
-            match result {
-                Ok(reply) => self.messages.push(ChatMessage {
-                    role: Role::Assistant,
-                    text: reply,
-                }),
-                Err(err) => self.messages.push(ChatMessage {
-                    role: Role::Error,
-                    text: err,
-                }),
+        let stream_events: Vec<StreamEvent> = {
+            let mut state = self.pending_stream.lock().unwrap();
+            state.events.drain(..).collect()
+        };
+        for event in stream_events {
+            match event {
+                StreamEvent::Token { text } => {
+                    if let Some(preview) = &mut self.streaming_preview {
+                        preview.push_str(&text);
+                    }
+                }
+                StreamEvent::ToolCall { tool, .. } => {
+                    self.streaming_status_lines.push(format!("→ using tool: {tool}"));
+                    // Next iteration's tokens start a fresh preview,
+                    // same as the CLI/web UI.
+                    self.streaming_preview = Some(String::new());
+                }
+                StreamEvent::ToolResult { .. } => {}
+                StreamEvent::Final { text } => {
+                    self.pending = false;
+                    self.streaming_preview = None;
+                    self.streaming_status_lines.clear();
+                    self.messages.push(ChatMessage {
+                        role: Role::Assistant,
+                        text,
+                    });
+                }
+                StreamEvent::Error { text } => {
+                    self.pending = false;
+                    self.streaming_preview = None;
+                    self.streaming_status_lines.clear();
+                    self.messages.push(ChatMessage {
+                        role: Role::Error,
+                        text,
+                    });
+                }
             }
         }
 
@@ -475,6 +590,15 @@ impl eframe::App for AssistantApp {
                             ui.add_space(8.0);
                         }
                         if self.pending {
+                            for line in &self.streaming_status_lines {
+                                ui.label(RichText::new(line.as_str()).weak().color(theme::AQUA));
+                            }
+                            if let Some(preview) = &self.streaming_preview {
+                                if !preview.is_empty() {
+                                    render_live_preview_bubble(ui, preview);
+                                    ui.add_space(8.0);
+                                }
+                            }
                             ui.horizontal(|ui| {
                                 ui.add(egui::Spinner::new().color(theme::AQUA));
                                 ui.label(RichText::new("thinking…").weak());
@@ -506,9 +630,145 @@ fn render_bubble(ui: &mut egui::Ui, message: &ChatMessage) {
             .inner_margin(Margin::symmetric(12, 9))
             .show(ui, |ui| {
                 ui.set_max_width(max_width);
-                ui.label(RichText::new(&message.text).color(text_color));
+                render_markdown(ui, &message.text, text_color);
             });
     });
+}
+
+/// The bubble shown while a reply is still streaming in -- plain text
+/// only (`white-space: pre-wrap`-equivalent via egui's default label
+/// wrapping), never markdown-rendered. Markdown formatting only makes
+/// sense once the full answer is known (a "##" or "**" at the very
+/// end of the visible stream so far might just not have its closing
+/// half yet), matching the CLI and web UI's same "raw while streaming,
+/// formatted once final" behavior.
+fn render_live_preview_bubble(ui: &mut egui::Ui, text: &str) {
+    let layout = egui::Layout::left_to_right(egui::Align::TOP);
+    ui.with_layout(layout, |ui| {
+        let max_width = (ui.available_width() * 0.78).max(120.0);
+        egui::Frame::new()
+            .fill(theme::VIOLET.gamma_multiply(0.55))
+            .corner_radius(CornerRadius::same(14))
+            .inner_margin(Margin::symmetric(12, 9))
+            .show(ui, |ui| {
+                ui.set_max_width(max_width);
+                ui.label(RichText::new(text).color(theme::TEXT));
+            });
+    });
+}
+
+/// Splits a heading's leading "#" run off, e.g. "## Title" -> Some((2, "Title")).
+fn heading_prefix(line: &str) -> Option<(usize, &str)> {
+    let hashes = line.bytes().take_while(|&b| b == b'#').count();
+    if hashes == 0 || hashes > 6 {
+        return None;
+    }
+    line[hashes..].strip_prefix(' ').map(|rest| (hashes, rest))
+}
+
+/// Splits a numbered-list line's leading "N. " off, e.g.
+/// "2. Second point" -> Some(("2", "Second point")).
+fn numbered_prefix(line: &str) -> Option<(&str, &str)> {
+    let (head, rest) = line.split_once(". ")?;
+    if head.is_empty() || !head.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((head, rest))
+}
+
+/// Builds a single-line `LayoutJob` handling `` `code` `` spans and
+/// `**bold**` emphasis (rendered in the accent color rather than a
+/// true bold font weight, since egui's default fonts don't ship a
+/// bold variant without embedding one) -- a deliberately small subset
+/// of inline markdown, matching the web UI's app.js renderer.
+fn inline_layout_job(line: &str, color: Color32, body_size: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font_id = egui::FontId::proportional(body_size);
+    let mono_id = egui::FontId::monospace(body_size * 0.95);
+
+    for (i, code_part) in line.split('`').enumerate() {
+        if code_part.is_empty() {
+            continue;
+        }
+        if i % 2 == 1 {
+            job.append(
+                code_part,
+                0.0,
+                egui::TextFormat {
+                    font_id: mono_id.clone(),
+                    color,
+                    background: Color32::from_black_alpha(60),
+                    ..Default::default()
+                },
+            );
+        } else {
+            for (j, bold_part) in code_part.split("**").enumerate() {
+                if bold_part.is_empty() {
+                    continue;
+                }
+                let part_color = if j % 2 == 1 { theme::PEACH } else { color };
+                job.append(
+                    bold_part,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font_id.clone(),
+                        color: part_color,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+    job
+}
+
+/// Small line-oriented markdown renderer: headers, bullet/numbered
+/// lists, paragraphs, plus the inline `**bold**`/`` `code` `` handling
+/// from inline_layout_job. Mirrors web/static/js/app.js's renderContent
+/// -- egui has no HTML/commonmark renderer built in, so this covers
+/// the same deliberately small subset by hand rather than pulling in
+/// a markdown crate for one chat view.
+fn render_markdown(ui: &mut egui::Ui, text: &str, color: Color32) {
+    let body_size = egui::TextStyle::Body.resolve(ui.style()).size;
+
+    for raw_line in text.split('\n') {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            ui.add_space(4.0);
+            continue;
+        }
+
+        if let Some((level, content)) = heading_prefix(line) {
+            let size = match level {
+                1 => body_size + 3.0,
+                2 => body_size + 2.0,
+                _ => body_size + 1.0,
+            };
+            ui.add_space(2.0);
+            ui.label(inline_layout_job(content, theme::PEACH, size));
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.colored_label(theme::AQUA, "•");
+                ui.label(inline_layout_job(rest, color, body_size));
+            });
+            continue;
+        }
+
+        if let Some((number, rest)) = numbered_prefix(line) {
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.colored_label(theme::AQUA, format!("{number}."));
+                ui.label(inline_layout_job(rest, color, body_size));
+            });
+            continue;
+        }
+
+        ui.label(inline_layout_job(line, color, body_size));
+    }
 }
 
 fn main() -> eframe::Result {
@@ -528,4 +788,149 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(AssistantApp::new(cc, base_url)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn events_from_bytes(chunks: &[&[u8]]) -> Vec<StreamEvent> {
+        let mut state = StreamState::default();
+        for chunk in chunks {
+            state.byte_buffer.extend_from_slice(chunk);
+            drain_sse_frames(&mut state);
+        }
+        state.events
+    }
+
+    fn token_text(event: &StreamEvent) -> &str {
+        match event {
+            StreamEvent::Token { text } => text,
+            _ => panic!("expected a Token event"),
+        }
+    }
+
+    #[test]
+    fn parses_a_single_complete_frame() {
+        let events = events_from_bytes(&[br#"data: {"type": "token", "text": "hi"}
+
+"#]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(token_text(&events[0]), "hi");
+    }
+
+    #[test]
+    fn parses_multiple_frames_in_one_chunk() {
+        let events = events_from_bytes(&[br#"data: {"type": "token", "text": "a"}
+
+data: {"type": "token", "text": "b"}
+
+"#]);
+        assert_eq!(events.len(), 2);
+        assert_eq!(token_text(&events[0]), "a");
+        assert_eq!(token_text(&events[1]), "b");
+    }
+
+    #[test]
+    fn reassembles_a_frame_split_across_chunks() {
+        // The frame's own JSON, and even the "\n\n" terminator, can
+        // land on either side of a network read boundary -- this is
+        // the whole reason StreamState buffers bytes instead of
+        // parsing each `Part::Chunk` in isolation.
+        let events = events_from_bytes(&[
+            br#"data: {"type": "tok"#,
+            br#"en", "text": "hello"}
+
+"#,
+        ]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(token_text(&events[0]), "hello");
+    }
+
+    #[test]
+    fn reassembles_when_the_double_newline_itself_is_split() {
+        let events = events_from_bytes(&[
+            br#"data: {"type": "token", "text": "x"}
+"#,
+            b"\n",
+        ]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(token_text(&events[0]), "x");
+    }
+
+    #[test]
+    fn leaves_an_incomplete_trailing_frame_buffered() {
+        let mut state = StreamState::default();
+        state
+            .byte_buffer
+            .extend_from_slice(br#"data: {"type": "token", "text": "partial""#);
+        drain_sse_frames(&mut state);
+        assert!(state.events.is_empty());
+        assert!(!state.byte_buffer.is_empty());
+    }
+
+    #[test]
+    fn parses_tool_call_event_and_ignores_unknown_extra_fields() {
+        let events = events_from_bytes(&[
+            br#"data: {"type": "tool_call", "tool": "web_search", "args": {"query": "cats"}}
+
+"#,
+        ]);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ToolCall { tool, .. } => assert_eq!(tool, "web_search"),
+            _ => panic!("expected a ToolCall event"),
+        }
+    }
+
+    #[test]
+    fn parses_final_and_error_events() {
+        let final_events = events_from_bytes(&[br#"data: {"type": "final", "text": "done"}
+
+"#]);
+        match &final_events[0] {
+            StreamEvent::Final { text } => assert_eq!(text, "done"),
+            _ => panic!("expected a Final event"),
+        }
+
+        let error_events = events_from_bytes(&[br#"data: {"type": "error", "text": "oops"}
+
+"#]);
+        match &error_events[0] {
+            StreamEvent::Error { text } => assert_eq!(text, "oops"),
+            _ => panic!("expected an Error event"),
+        }
+    }
+
+    #[test]
+    fn malformed_frame_is_skipped_not_fatal() {
+        let events = events_from_bytes(&[b"data: not valid json\n\n"]);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn value_to_edit_string_unwraps_json_strings() {
+        assert_eq!(
+            value_to_edit_string(&serde_json::Value::String("hello".to_string())),
+            "hello"
+        );
+        assert_eq!(value_to_edit_string(&serde_json::json!(42)), "42");
+        assert_eq!(value_to_edit_string(&serde_json::json!(0.5)), "0.5");
+    }
+
+    #[test]
+    fn heading_prefix_parses_level_and_content() {
+        assert_eq!(heading_prefix("## Size and Weight"), Some((2, "Size and Weight")));
+        assert_eq!(heading_prefix("# Title"), Some((1, "Title")));
+        assert_eq!(heading_prefix("Not a heading"), None);
+        assert_eq!(heading_prefix("#NoSpace"), None);
+    }
+
+    #[test]
+    fn numbered_prefix_parses_number_and_content() {
+        assert_eq!(numbered_prefix("1. First point"), Some(("1", "First point")));
+        assert_eq!(numbered_prefix("12. Twelfth"), Some(("12", "Twelfth")));
+        assert_eq!(numbered_prefix("Not numbered"), None);
+        assert_eq!(numbered_prefix("1.NoSpace"), None);
+    }
 }

@@ -114,6 +114,125 @@
     }
   }
 
+  // Streams /api/chat/stream's Server-Sent Events: a plain-text
+  // "live" bubble grows token-by-token while the model is generating
+  // (same idea as the CLI's rich.Live preview), tool calls show as a
+  // small status line instead of raw JSON, and once the turn produces
+  // a final answer the live bubble is swapped for a properly
+  // markdown-rendered one via addBubble().
+  async function sendStreaming(message) {
+    let liveBubble = null;
+    let liveText = "";
+
+    const ensureLiveBubble = () => {
+      if (!liveBubble) {
+        liveBubble = document.createElement("div");
+        liveBubble.className = "bubble bubble-assistant bubble-live";
+        const glare = document.createElement("div");
+        glare.className = "bubble-glare";
+        liveBubble.appendChild(glare);
+        const content = document.createElement("div");
+        content.className = "live-content";
+        liveBubble.appendChild(content);
+        messages.appendChild(liveBubble);
+        messages.scrollTop = messages.scrollHeight;
+      }
+      return liveBubble.querySelector(".live-content");
+    };
+
+    const addStatusLine = (text) => {
+      const line = document.createElement("div");
+      line.className = "status-line";
+      line.textContent = text;
+      messages.appendChild(line);
+      messages.scrollTop = messages.scrollHeight;
+    };
+
+    const cleanupLive = () => {
+      if (liveBubble) {
+        liveBubble.remove();
+        liveBubble = null;
+        liveText = "";
+      }
+    };
+
+    const response = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+
+    if (!response.ok || !response.body) {
+      let errorText = "Something went wrong.";
+      try {
+        const data = await response.json();
+        errorText = data.error || errorText;
+      } catch (_err) {
+        /* response wasn't JSON -- keep the generic message */
+      }
+      addBubble(errorText, "error");
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary;
+      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        if (!frame.startsWith("data: ")) continue;
+
+        let payload;
+        try {
+          payload = JSON.parse(frame.slice(6));
+        } catch (_err) {
+          continue;
+        }
+
+        if (payload.type === "token") {
+          liveText += payload.text;
+          ensureLiveBubble().textContent = liveText;
+          messages.scrollTop = messages.scrollHeight;
+        } else if (payload.type === "tool_call") {
+          cleanupLive();
+          addStatusLine(`→ using tool: ${payload.tool}`);
+        } else if (payload.type === "final") {
+          cleanupLive();
+          addBubble(payload.text, "assistant");
+        } else if (payload.type === "error") {
+          cleanupLive();
+          addBubble(payload.text, "error");
+        }
+      }
+    }
+  }
+
+  // Auto-grow the composer textarea with its content, up to the CSS
+  // max-height (140px) -- past that, #message-input's own
+  // `overflow-y: auto` takes over instead of the box (or the text)
+  // silently getting cut off.
+  function resizeInput() {
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }
+  input.addEventListener("input", resizeInput);
+
+  // Enter sends; Shift+Enter inserts a newline (textareas don't submit
+  // their form on Enter by default, so this has to be done manually).
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const message = input.value.trim();
@@ -121,20 +240,11 @@
 
     addBubble(message, "user");
     input.value = "";
+    resizeInput();
     setBusy(true);
 
     try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        addBubble(data.error || "Something went wrong.", "error");
-      } else {
-        addBubble(data.reply, "assistant");
-      }
+      await sendStreaming(message);
     } catch (err) {
       addBubble("Could not reach the assistant server.", "error");
     } finally {

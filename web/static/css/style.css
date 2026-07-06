@@ -515,6 +515,20 @@ body {
   pointer-events: none;
 }
 
+/* live streaming preview bubble -- plain text only (see app.js's
+   sendStreaming): markdown rendering only happens once the final,
+   complete answer replaces this bubble. */
+.bubble-live .live-content {
+  white-space: pre-wrap;
+}
+
+.status-line {
+  align-self: flex-start;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  padding: 2px 4px;
+}
+
 /* ---------- typing indicator ---------- */
 
 .typing-indicator {
@@ -550,7 +564,7 @@ body {
 .composer {
   padding: 10px 10px 10px 20px;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
 }
 
@@ -558,10 +572,26 @@ body {
   flex: 1;
   border: none;
   outline: none;
+  resize: none;
   background: transparent;
   color: var(--text-primary);
+  font-family: inherit;
   font-size: 0.98rem;
+  line-height: 1.4;
   padding: 10px 0;
+  /* Grows with content (see app.js's auto-resize) up to this cap, then
+     scrolls internally instead of silently clipping long messages. */
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+#message-input::-webkit-scrollbar {
+  width: 6px;
+}
+
+#message-input::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--aqua), var(--violet));
+  border-radius: 999px;
 }
 
 #message-input::placeholder {

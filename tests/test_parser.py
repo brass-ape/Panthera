@@ -10,6 +10,18 @@ class TestParseLlmResponse:
         assert parsed.tool_call.tool == "read"
         assert parsed.tool_call.args == {"file": "people/me.md"}
 
+    def test_tolerates_raw_newlines_inside_json_string_values(self):
+        # Small local models very commonly emit a multi-line "content"
+        # field as a literal newline instead of an escaped "\n" -- that
+        # is invalid strict JSON but unambiguous in intent, and should
+        # still parse as a real tool call rather than falling back to
+        # dumping the raw (garbled-looking) JSON as the final answer.
+        text = '{"tool": "write", "file": "facts/sade.md", "content": "# Sade\nline two\nline three"}'
+        parsed = parse_llm_response(text)
+        assert parsed.is_tool_call
+        assert parsed.tool_call.tool == "write"
+        assert parsed.tool_call.args["content"] == "# Sade\nline two\nline three"
+
     def test_parses_json_wrapped_in_markdown_fence(self):
         text = '```json\n{"tool": "search", "query": "rust"}\n```'
         parsed = parse_llm_response(text)
@@ -82,6 +94,27 @@ class TestParseLlmResponse:
             '{"tool": "propose_plugin", "name": "../escape", '
             '"description": "x", "code": "y"}'
         )
+        assert not parsed.is_tool_call
+
+    def test_aliased_tool_name_resolves_to_real_tool(self):
+        # Models trained on other agent frameworks sometimes reach for
+        # a plausible-sounding synonym instead of this app's real tool
+        # names -- see parser._TOOL_ALIASES.
+        parsed = parse_llm_response(
+            '{"tool": "create_file", "file": "facts/a.md", "content": "hi"}'
+        )
+        assert parsed.is_tool_call
+        assert parsed.tool_call.tool == "write"
+        assert parsed.tool_call.args == {"file": "facts/a.md", "content": "hi"}
+
+    def test_aliased_tool_still_requires_real_tools_args(self):
+        # "delete_file" aliases to "remove", which requires "file" --
+        # aliasing doesn't bypass the real tool's argument schema.
+        parsed = parse_llm_response('{"tool": "delete_file"}')
+        assert not parsed.is_tool_call
+
+    def test_unrecognized_tool_name_is_not_aliased(self):
+        parsed = parse_llm_response('{"tool": "delete_everything_forever"}')
         assert not parsed.is_tool_call
 
     def test_propose_plugin_rejects_uppercase_name(self):

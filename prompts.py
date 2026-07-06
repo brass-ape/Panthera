@@ -207,6 +207,20 @@ Keep notes small and focused -- one topic per file. Prefer several
 small files (e.g. people/alice.md, facts/linux.md) over one giant
 memory.md. Before writing, check whether a relevant file already
 exists and update it instead of creating a duplicate.
+
+Organizing as things grow:
+- If a topic accumulates several related notes (a project, a person,
+  a recurring subject), use create_folder to give it its own
+  subfolder (e.g. projects/assistant/, people/alice/) instead of
+  letting everything pile up flat in one folder.
+- If a note is getting long or covers more than one topic, split it
+  into several smaller linked notes rather than one long file.
+- Cross-link related notes using Obsidian's [[wikilink]] syntax (e.g.
+  "See [[people/alice]] for context" or "Part of [[projects/assistant]]")
+  whenever a note relates to another one you know about. This is what
+  turns the vault into a connected knowledge base instead of a pile of
+  disconnected files -- prefer adding a link over repeating the same
+  information in multiple places.
 """
 
 MEMORY_CREATION_PROMPT = """\

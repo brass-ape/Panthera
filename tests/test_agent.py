@@ -204,6 +204,82 @@ class TestOllamaClientChatStream:
             client.chat_stream([{"role": "user", "content": "hi"}], lambda t: None)
 
 
+class ScriptedMemoryClient:
+    """A client whose .chat() always gives a plain final answer (so
+    run_turn's tool loop finishes immediately), and whose
+    .complete_text() -- used only by the memory-creation step --
+    returns a scripted sequence of responses.
+    """
+
+    def __init__(self, memory_script: list[str]):
+        self._memory_script = list(memory_script)
+        self.complete_text_calls: list[str] = []
+
+    def chat(self, messages):
+        return "Final answer, no tool calls needed."
+
+    def complete_text(self, prompt):
+        self.complete_text_calls.append(prompt)
+        return self._memory_script.pop(0)
+
+
+class TestAutomaticMemoryCreation:
+    def test_saves_multiple_distinct_facts_in_one_turn(self, vault_dir):
+        client = ScriptedMemoryClient(
+            [
+                json.dumps({"tool": "write", "file": "facts/a.md", "content": "Fact A"}),
+                json.dumps({"tool": "write", "file": "facts/b.md", "content": "Fact B"}),
+                '{"tool": "none"}',
+            ]
+        )
+        a = Agent(client=client, memory=VaultMemory())
+        a.run_turn("tell me about A and B")
+
+        assert VaultMemory().read("facts/a.md") == "Fact A"
+        assert VaultMemory().read("facts/b.md") == "Fact B"
+        # Stopped as soon as the model said "none" -- did not keep
+        # going until the configured cap.
+        assert len(client.complete_text_calls) == 3
+
+    def test_stops_at_max_memory_writes_per_turn(self, vault_dir, config_override):
+        config_override(agent_module, max_memory_writes_per_turn=2)
+        client = ScriptedMemoryClient(
+            [
+                json.dumps({"tool": "write", "file": "facts/a.md", "content": "Fact A"}),
+                json.dumps({"tool": "write", "file": "facts/b.md", "content": "Fact B"}),
+                json.dumps({"tool": "write", "file": "facts/c.md", "content": "Fact C"}),
+            ]
+        )
+        a = Agent(client=client, memory=VaultMemory())
+        a.run_turn("tell me about A, B, and C")
+
+        assert VaultMemory().read("facts/a.md") == "Fact A"
+        assert VaultMemory().read("facts/b.md") == "Fact B"
+        # The cap is 2 writes -- the third scripted response is never
+        # even requested.
+        assert len(client.complete_text_calls) == 2
+
+    def test_already_saved_summaries_are_relayed_to_the_next_prompt(self, vault_dir):
+        client = ScriptedMemoryClient(
+            [
+                json.dumps({"tool": "write", "file": "facts/a.md", "content": "Fact A"}),
+                '{"tool": "none"}',
+            ]
+        )
+        a = Agent(client=client, memory=VaultMemory())
+        a.run_turn("tell me about A")
+
+        second_prompt = client.complete_text_calls[1]
+        assert "facts/a.md" in second_prompt
+        assert "Already saved" in second_prompt
+
+    def test_no_facts_worth_saving_writes_nothing(self, vault_dir):
+        client = ScriptedMemoryClient(['{"tool": "none"}'])
+        a = Agent(client=client, memory=VaultMemory())
+        a.run_turn("just chatting")
+        assert VaultMemory().list_files("facts") == []
+
+
 class TestBuildLlmClient:
     def test_defaults_to_ollama(self, config_override):
         config_override(agent_module, llm_backend="ollama")

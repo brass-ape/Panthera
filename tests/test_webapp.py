@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import config as config_module
 import webapp
-from agent import OllamaConnectionError
+from agent import OllamaConnectionError, ToolCallEvent, ToolResultEvent, TokenEvent
 from config import CONFIG
 
 
@@ -11,16 +13,30 @@ class FakeAgent:
     Ollama/Claude backend.
     """
 
-    def __init__(self, reply="stub reply", raise_exc=None):
+    def __init__(self, reply="stub reply", raise_exc=None, events=None):
         self.reply = reply
         self.raise_exc = raise_exc
+        self.events = events or []
         self.calls: list[str] = []
 
-    def run_turn(self, message):
+    def run_turn(self, message, on_event=None):
         self.calls.append(message)
+        if on_event:
+            for event in self.events:
+                on_event(event)
         if self.raise_exc:
             raise self.raise_exc
         return self.reply
+
+
+def _parse_sse(body: bytes) -> list[dict]:
+    text = body.decode("utf-8")
+    events = []
+    for frame in text.split("\n\n"):
+        frame = frame.strip()
+        if frame.startswith("data: "):
+            events.append(json.loads(frame[len("data: "):]))
+    return events
 
 
 def _isolate_config_file(monkeypatch, tmp_path):
@@ -79,6 +95,65 @@ class TestChatEndpoint:
         client = webapp.app.test_client()
         response = client.post("/api/chat", json={"message": "hi"})
         assert response.status_code == 500
+
+
+class TestChatStreamEndpoint:
+    def test_empty_message_rejected(self, monkeypatch):
+        monkeypatch.setattr(webapp, "_agent", FakeAgent())
+        client = webapp.app.test_client()
+        response = client.post("/api/chat/stream", json={"message": ""})
+        assert response.status_code == 400
+
+    def test_streams_token_and_final_events(self, monkeypatch):
+        fake = FakeAgent(
+            reply="Hello world.",
+            events=[TokenEvent("Hello "), TokenEvent("world.")],
+        )
+        monkeypatch.setattr(webapp, "_agent", fake)
+        client = webapp.app.test_client()
+
+        response = client.post("/api/chat/stream", json={"message": "hi"})
+        assert response.status_code == 200
+        assert response.mimetype == "text/event-stream"
+
+        events = _parse_sse(response.get_data())
+        assert events[0] == {"type": "token", "text": "Hello "}
+        assert events[1] == {"type": "token", "text": "world."}
+        assert events[2] == {"type": "final", "text": "Hello world."}
+        assert fake.calls == ["hi"]
+
+    def test_streams_tool_call_and_result_events(self, monkeypatch):
+        fake = FakeAgent(
+            reply="done",
+            events=[
+                ToolCallEvent("web_search", {"query": "cats"}),
+                ToolResultEvent("web_search", "some results"),
+            ],
+        )
+        monkeypatch.setattr(webapp, "_agent", fake)
+        client = webapp.app.test_client()
+
+        response = client.post("/api/chat/stream", json={"message": "search cats"})
+        events = _parse_sse(response.get_data())
+
+        assert events[0] == {"type": "tool_call", "tool": "web_search", "args": {"query": "cats"}}
+        assert events[1] == {"type": "tool_result", "tool": "web_search"}
+        assert events[2] == {"type": "final", "text": "done"}
+
+    def test_llm_connection_error_streams_error_event(self, monkeypatch):
+        monkeypatch.setattr(webapp, "_agent", FakeAgent(raise_exc=OllamaConnectionError("offline")))
+        client = webapp.app.test_client()
+        response = client.post("/api/chat/stream", json={"message": "hi"})
+        events = _parse_sse(response.get_data())
+        assert events[-1]["type"] == "error"
+        assert "offline" in events[-1]["text"]
+
+    def test_unexpected_error_streams_error_event(self, monkeypatch):
+        monkeypatch.setattr(webapp, "_agent", FakeAgent(raise_exc=RuntimeError("boom")))
+        client = webapp.app.test_client()
+        response = client.post("/api/chat/stream", json={"message": "hi"})
+        events = _parse_sse(response.get_data())
+        assert events[-1]["type"] == "error"
 
 
 class TestConfigEndpoints:
